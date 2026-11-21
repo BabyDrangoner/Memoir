@@ -123,7 +123,7 @@ def train(cli):
     from colab_full_pretrain import git_revision
     from drama_ir2r import (NUMERICS, author_args, canonical_boundary, complete_tour, configure_numerics,
                             digest, restore_runtime, runtime_state, static_environment)
-    from drama_mount_guard import validate_separate_roots
+    from drama_mount_guard import checkpoint_mount_contract, validate_separate_roots
     from drama_pretrain import (atomic_torch, code_manifest, json_sha, runtime_identity, seed_all,
                                 space_guard, tensor_bytes, verified_copy, write_json)
     require(os.environ.get("PYTHONHASHSEED") == "0", "Set PYTHONHASHSEED=0 before starting Python")
@@ -162,7 +162,7 @@ def train(cli):
         runtime["bert_config"].pop("resolved_path")
         if runtime["mattersim"]:
             runtime["mattersim"].pop("path")
-        mount = {k: store.mount[k] for k in ("backend", "mount_root", "filesystem", "source")}
+        mount = checkpoint_mount_contract(store.mount)
         contract = {"stage": "memoir-full-ir2r-v1", "pretrain_handoff_sha256": json_sha(header),
                     "pretrain_model_sha256": header["model_sha256"], "architecture": header["architecture"],
                     "assets": assets, "tour_coverage": coverage, "environment_sha256": digest(static_environment(env)),
@@ -243,9 +243,7 @@ def train(cli):
             state = agent.vln_bert.vln_bert.state_dict()
             export_size = tensor_bytes(state) + 32 * 1024**2
             if not (backup / "final-model.pt").exists():
-                # Filesystem backups can share a physical device with local outputs.
-                copies = 2 if run.stat().st_dev == backup.stat().st_dev else 1
-                space_guard((run, backup), store.min_free_gib, copies * export_size)
+                store.check_space_for_pair(export_size)
                 atomic_torch(final_file, {k: v.detach().cpu() for k, v in state.items()})
                 store.backup_check()
                 model_sha = verified_copy(final_file, backup / final_file.name)
@@ -279,7 +277,7 @@ def parse(argv=None):
     p.add_argument("--world-model-backend", choices=BACKENDS, default=MAMBA2)
     p.add_argument("--run-root", type=Path, required=True)
     p.add_argument("--backup-root", type=Path, required=True)
-    p.add_argument("--backup-backend", choices=("drive", "filesystem"), required=True)
+    p.add_argument("--backup-backend", choices=("drive", "filesystem", "runtime-local"), required=True)
     p.add_argument("--batch-size", type=int, choices=BUDGET, default=8)
     p.add_argument("--auto-batch", action="store_true", help="Start at 8. Only CUDA OOM starts a new lower-batch experiment")
     p.add_argument("--save-every", type=int, default=100)

@@ -4,8 +4,8 @@ set -euo pipefail
 mode="${1:?choose start, resume-pretrain, or resume-ir2r}"
 : "${MEMOIR_DATASETS:?set the parent of R2R/}"
 : "${MEMOIR_RUN_ROOT:?set a new local experiment root}"
-: "${MEMOIR_BACKUP_ROOT:?set the persistent experiment root}"
-: "${MEMOIR_BACKUP_BACKEND:?choose drive or filesystem}"
+: "${MEMOIR_BACKUP_ROOT:?set the separate verified checkpoint copy directory}"
+: "${MEMOIR_BACKUP_BACKEND:?choose drive, filesystem, or runtime-local}"
 
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo"

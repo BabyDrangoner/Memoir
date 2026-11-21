@@ -20,6 +20,7 @@ from torch.nn.utils.rnn import pad_sequence
 import drama_pretrain as pre
 from colab_full_architecture import BACKENDS, MAMBA2, TEMPORAL_HYBRID, architecture
 from colab_full_storage import FullStore
+from drama_mount_guard import STORAGE_BACKENDS, checkpoint_mount_contract
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -255,7 +256,7 @@ def contract(cfg, assets, rows, mount, initialization):
             "architecture": architecture(cfg, cfg.get("world_model_backend", MAMBA2)),
             "initialization": initialization,
             "objective": "frozen eval-mode text/panorama; author GT paths, batched positive panoramas, KL, overshoot and next-goal-distance",
-            "runtime": runtime, "backup_mount": {k: mount[k] for k in ("backend", "mount_root", "filesystem", "source")}}
+            "runtime": runtime, "backup_mount": checkpoint_mount_contract(mount)}
 
 
 def mirror_base(run, backup, frozen_names, model, store, resume):
@@ -267,7 +268,7 @@ def mirror_base(run, backup, frozen_names, model, store, resume):
         pre.verified_copy(mirror, source)
     else:
         frozen = {k: v.detach().cpu() for k, v in model.state_dict().items() if k in frozen_names}
-        pre.space_guard([run, backup], store.min_free_gib, pre.tensor_bytes(frozen) + 32 * 2**20)
+        store.check_space_for_pair(pre.tensor_bytes(frozen) + 32 * 2**20)
         pre.atomic_torch(source, frozen)
         store.backup_check()
         pre.verified_copy(source, mirror)
@@ -295,7 +296,7 @@ def finalize(model, cfg, stage, backup, identity, store):
             raise RuntimeError("Existing final export differs from terminal training state")
     else:
         data = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-        pre.space_guard((stage, backup), store.min_free_gib, pre.tensor_bytes(data) + 32 * 2**20)
+        store.check_space_for_pair(pre.tensor_bytes(data) + 32 * 2**20)
         pre.atomic_torch(file, data)
     store.backup_check()
     digest = pre.verified_copy(file, remote_file)
@@ -435,7 +436,7 @@ if __name__ == "__main__":
     p.add_argument("--asset-root", type=Path, required=True, help="Author datasets/R2R directory")
     p.add_argument("--run-root", type=Path, required=True)
     p.add_argument("--backup-root", type=Path, required=True)
-    p.add_argument("--backup-backend", choices=("drive", "filesystem"), required=True)
+    p.add_argument("--backup-backend", choices=STORAGE_BACKENDS, required=True)
     p.add_argument("--require-resume", action="store_true")
     p.add_argument("--stop-after", type=int, help="Commit complete training state and exit after this optimizer step")
     run(p.parse_args())

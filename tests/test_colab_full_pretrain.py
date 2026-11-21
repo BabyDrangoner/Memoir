@@ -42,3 +42,46 @@ class FullDataTests(unittest.TestCase):
                 self.assertEqual([rows[i]["instr_encoding"] for i in [2, 0, 3, 1]], [[3], [1], [4], [2]])
             finally:
                 rows.augmented.close()
+
+
+class RuntimeLocalStorageTests(unittest.TestCase):
+    root = "19 1 0:42 / / rw,relatime - overlay overlay rw\n"
+    drive = "41 19 0:43 / /content/drive rw - fuse.drive drive rw\n"
+    boot = "44b47729-6a30-4e19-971a-089a8d0c5519"
+
+    def proc(self, mounts, boot=None):
+        def read(path):
+            if str(path) == "/proc/self/mountinfo":
+                return mounts
+            if str(path) == "/proc/sys/kernel/random/boot_id":
+                return boot or self.boot
+            raise AssertionError(path)
+        return patch.object(Path, "read_text", autospec=True, side_effect=read)
+
+    def test_runtime_identity_and_strict_mount_contract(self):
+        from drama_mount_guard import backup_mount_identity, checkpoint_mount_contract, validate_backup_root
+        dest = Path("/content/project/experiment/checkpoints")
+        with patch.object(Path, "is_file", return_value=True), self.proc(self.root + self.drive):
+            identity = backup_mount_identity(dest, backend="runtime-local")
+            self.assertEqual(identity["filesystem"], "overlay")
+            self.assertEqual(identity["boot_id"], self.boot)
+            self.assertEqual(checkpoint_mount_contract(identity)["mount_id"], "19")
+            validate_backup_root(dest, backend="runtime-local", expected_identity=identity)
+            with self.assertRaisesRegex(RuntimeError, "not mounted"):
+                backup_mount_identity(dest, backend="drive")
+            with patch.object(Path, "is_dir", return_value=True), self.assertRaisesRegex(RuntimeError, "persistent filesystem"):
+                backup_mount_identity(dest, backend="filesystem")
+        with patch.object(Path, "is_file", return_value=True), self.proc(self.root, "7ea74db3-c904-44b8-9f88-99b7ed9622fb"):
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                validate_backup_root(dest, backend="runtime-local", expected_identity=identity)
+
+    def test_runtime_store_excludes_drive_submounts_and_other_disks(self):
+        from drama_mount_guard import backup_mount_identity
+        mount = "28 19 8:1 / /content/mounted rw - ext4 /dev/sda rw\n"
+        with patch.object(Path, "is_file", return_value=True), self.proc(self.root + self.drive + mount):
+            for value in ("/content/drive/test", "/content/mounted/weights", "/tmp/test"):
+                with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "Colab /content"):
+                    backup_mount_identity(Path(value), backend="runtime-local")
+        with patch.object(Path, "is_file", return_value=True), self.proc(self.root.replace("overlay overlay", "tmpfs tmpfs")):
+            with self.assertRaisesRegex(RuntimeError, "writable local disk"):
+                backup_mount_identity(Path("/content/experiment"), backend="runtime-local")
