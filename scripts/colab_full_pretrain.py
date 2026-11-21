@@ -18,6 +18,7 @@ from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 import drama_pretrain as pre
+from colab_full_architecture import BACKENDS, MAMBA2, TEMPORAL_HYBRID, architecture
 from colab_full_storage import FullStore
 
 
@@ -251,7 +252,7 @@ def contract(cfg, assets, rows, mount, initialization):
             "source_files": source, "author_config_sha256": pre.sha(AUTHOR_CONFIG),
             "assets": assets, "rows": {"r2r": len(rows.original), "prevalent": len(rows.offsets)},
             "sampler": "uniform shuffled union without replacement; each input instruction or JSONL row kept",
-            "architecture": {k: cfg[k] for k in ("d_model", "layers", "d_state", "headdim")},
+            "architecture": architecture(cfg, cfg.get("world_model_backend", MAMBA2)),
             "initialization": initialization,
             "objective": "frozen eval-mode text/panorama; author GT paths, batched positive panoramas, KL, overshoot and next-goal-distance",
             "runtime": runtime, "backup_mount": {k: mount[k] for k in ("backend", "mount_root", "filesystem", "source")}}
@@ -311,6 +312,12 @@ def finalize(model, cfg, stage, backup, identity, store):
 
 def run(a):
     cfg = json.loads(a.config.read_text())
+    if "world_model_backend" in cfg and cfg["world_model_backend"] != a.world_model_backend:
+        raise ValueError("Configuration and requested world-model backend differ")
+    if a.world_model_backend == TEMPORAL_HYBRID:
+        cfg.update(experiment="memoir-temporal-hybrid-full", world_model_backend=TEMPORAL_HYBRID)
+    layout = architecture(cfg, a.world_model_backend)
+    print("PRETRAIN_ARCHITECTURE", json.dumps(layout), flush=True)
     if os.environ.get("PYTHONHASHSEED") != "0" or not torch.cuda.is_available():
         raise RuntimeError("Launch on a CUDA GPU with PYTHONHASHSEED=0")
     pre.configure_runtime(cfg)
@@ -326,6 +333,8 @@ def run(a):
             raise RuntimeError("Run artifacts already exist. Select strict resume or a new run.")
         if a.require_resume and not (backup / "identity.json").is_file():
             raise RuntimeError("Strict resume needs the persistent training identity.")
+        if a.require_resume and json.loads((backup / "identity.json").read_text())["contract"]["architecture"] != layout:
+            raise RuntimeError("Strict resume rejected a different world-model architecture")
         paths = author_paths()
         assets = assets_manifest(root, cfg, paths)
         rows = TrainingRows(root / paths["train_traj_file"], root / paths["train_aug_traj_file"])
@@ -422,6 +431,7 @@ def run(a):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    p.add_argument("--world-model-backend", choices=BACKENDS, default=MAMBA2)
     p.add_argument("--asset-root", type=Path, required=True, help="Author datasets/R2R directory")
     p.add_argument("--run-root", type=Path, required=True)
     p.add_argument("--backup-root", type=Path, required=True)

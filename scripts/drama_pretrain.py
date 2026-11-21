@@ -93,7 +93,7 @@ def model_args(cfg):
         num_l_layers=9, num_pano_layers=2, num_x_layers=4, graph_sprels=True,
         fusion='dynamic', fix_lang_embedding=True, fix_pano_embedding=True,
         fix_local_branch=False, freeze_encoders=True, initialize_drama_world=True,
-        world_model_backend='drama_mamba2', drama_d_model=cfg.get('d_model',512),
+        world_model_backend=cfg.get('world_model_backend', 'drama_mamba2'), drama_d_model=cfg.get('d_model',512),
         drama_layers=cfg.get('layers',2), drama_d_state=cfg.get('d_state',16),
         drama_headdim=cfg.get('headdim',64), drama_dropout=cfg.get('drama_dropout',.1))
 

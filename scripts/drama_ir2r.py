@@ -350,7 +350,7 @@ def author_args(cfg, architecture):
         sys.argv = old
     args.bert_ckpt_file = None  # All raw model keys are loaded strictly from verified pretraining artifacts below.
     args.initialize_drama_world = True
-    args.world_model_backend = 'drama_mamba2'
+    args.world_model_backend = architecture.get('world_model_backend', 'drama_mamba2')
     args.freeze_encoders = True
     for key, default in [('d_model', 512), ('layers', 2), ('d_state', 16), ('headdim', 64), ('dropout', 0.1)]:
         setattr(args, 'drama_' + key, architecture.get(key, default))
