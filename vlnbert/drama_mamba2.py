@@ -19,6 +19,7 @@ from torch.nn import functional as F
 
 WORLD_MODEL_PREFIXES = ('lang_init.', 'prior.', 'posterior.', 'to_vis_embed.',
                         'to_reward.', 'obs_transform.')
+TEMPORAL_HYBRID_BACKEND = 'drama_mamba2_temporal_hybrid'
 
 
 class GatedRMSNorm(nn.Module):
@@ -114,17 +115,64 @@ class FunctionalMamba2(nn.Module):
         return torch.stack(outputs, 1), cache
 
 
+class CausalTemporalAttention(nn.Module):
+    """Full causal self-attention over trajectory positions, with T5 distance buckets."""
+
+    def __init__(self, d_model=768, n_heads=12):
+        super().__init__()
+        if d_model % n_heads:
+            raise ValueError('Temporal attention width must be divisible by its head count')
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.relative_bias = nn.Embedding(32, n_heads)
+
+    def _relative_buckets(self, distance):
+        # Single-direction T5 buckets: exact lags 0..15, logarithmic to 128.
+        exact = self.relative_bias.num_embeddings // 2
+        long_bucket = torch.log(distance.clamp_min(exact).float() / exact) / math.log(128 / exact)
+        buckets = torch.where(distance < exact, distance, exact + (long_bucket * exact).long())
+        return buckets.clamp(0, self.relative_bias.num_embeddings - 1)
+
+    def forward(self, inputs, cache=None):
+        batch, steps, width = inputs.shape
+        q, k, v = self.qkv(inputs).view(batch, steps, 3, self.n_heads, self.head_dim).unbind(2)
+        q, k, v = (tensor.transpose(1, 2) for tensor in (q, k, v))
+        past = 0
+        if cache is not None:
+            past_k, past_v = cache
+            if (past_k.ndim != 4 or past_v.shape != past_k.shape
+                    or past_k.shape[:2] != (batch, self.n_heads) or past_k.shape[-1] != self.head_dim):
+                raise ValueError('Temporal KV cache shape does not match current batch or heads')
+            past = past_k.size(2)
+            k = torch.cat((past_k, k), dim=2)
+            v = torch.cat((past_v, v), dim=2)
+        q_pos = torch.arange(past, past + steps, device=inputs.device)
+        k_pos = torch.arange(k.size(2), device=inputs.device)
+        distance = q_pos[:, None] - k_pos[None, :]
+        bias = self.relative_bias(self._relative_buckets(distance)).permute(2, 0, 1)
+        scores = (q @ k.transpose(-1, -2)) * (self.head_dim ** -0.5)
+        scores = (scores.float() + bias.float()).masked_fill(distance < 0, float('-inf'))
+        attended = scores.softmax(-1).to(v.dtype) @ v
+        output = self.out_proj(attended.transpose(1, 2).reshape(batch, steps, width))
+        return output, (k, v)
+
+
 class DramaMamba2Prior(nn.Module):
     """Language-conditioned causal Mamba-2 replacing only Memoir's TSSM prior.
 
     The four-tensor layer tuple preserves the author's overshooting batching
-    interface: (conv_state, ssm_state, language_keys, language_values). The last
-    two slots are cached projections of the fixed instruction, not temporal KV.
+    interface. Its first two slots are convolution/SSM state in Mamba layers
+    and trajectory keys/values in the optional fourth attention layer. The last
+    two slots always hold projections of the fixed instruction.
     """
     def __init__(self, stoch_size=96, stoch_discrete=False, hidden_size=768,
                  deter_size=672, d_model=512, n_layers=2, d_state=16,
-                 headdim=64, dropout=0.1):
+                 headdim=64, dropout=0.1, temporal_attention=False):
         super().__init__()
+        if temporal_attention and (n_layers, d_model) != (4, 768):
+            raise ValueError('The temporal hybrid requires four layers of width 768')
         self.hidden_size, self.deter_size = hidden_size, deter_size
         self.d_model, self.n_layers = d_model, n_layers
         latent = stoch_size * (stoch_discrete or 1) + deter_size
@@ -135,8 +183,11 @@ class DramaMamba2Prior(nn.Module):
         self.language_o = nn.Linear(d_model, d_model, bias=False)
         self.language_norm = nn.LayerNorm(d_model)
         self.pre_norms = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(n_layers)])
+        n_mamba = n_layers - int(temporal_attention)
         self.layers = nn.ModuleList([FunctionalMamba2(d_model, d_state, headdim=headdim)
-                                     for _ in range(n_layers)])
+                                     for _ in range(n_mamba)])
+        if temporal_attention:
+            self.layers.append(CausalTemporalAttention(d_model, n_heads=12))
         self.final_norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         self.to_deter = nn.Linear(d_model, deter_size)

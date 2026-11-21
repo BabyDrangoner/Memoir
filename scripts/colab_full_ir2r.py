@@ -9,9 +9,10 @@ import subprocess
 import sys
 import time
 
+from colab_full_architecture import ARCH, BACKENDS, MAMBA2, architecture
+
 BUDGET = {8: 10000, 4: 20000, 2: 40000}
 OOM_EXIT = 86
-ARCH = {"d_model": 768, "layers": 4, "d_state": 16, "headdim": 64}
 OFFICIAL = {
     "annotations/R2R_train_enc.json": "7745f32c24e40b75107c11593ec768eb2b26a5ab784675346abef3c9edf46d5c",
     "tours_iVLN.json": "0ef3b8582e4389a800a4eabc37b81cc15486f86bccd748d168e0270015a49125",
@@ -24,13 +25,20 @@ def require(test, message):
         raise RuntimeError(message)
 
 
-def verify_handoff(path):
-    from drama_pretrain import sha
+def verify_handoff(path, backend=MAMBA2):
+    from drama_pretrain import json_sha, sha
     header = json.loads((path / "handoff.json").read_text())
     require(header.get("complete") is True and header.get("step") == 5000 and
             header.get("selection") == "fixed-final-step", "Incomplete or unselected pretraining handoff")
-    require(all(header.get("architecture", {}).get(k) == v for k, v in ARCH.items()),
-            "Expected 4-layer, 768-wide Mamba-2 checkpoint")
+    require(header.get("architecture") == architecture(ARCH, backend),
+            f"Expected a 4-layer, 768-wide {backend} checkpoint")
+    if backend != MAMBA2:
+        identity = json.loads((path / "identity.json").read_text())
+        require(json_sha(identity) == header.get("identity_sha256")
+                and identity["contract"]["architecture"] == header["architecture"]
+                and identity["contract"]["config"]["world_model_backend"] == backend
+                and identity["contract"]["assets"] == header["assets"],
+                "Handoff disagrees with the saved pretraining experiment")
     require(header.get("model_file") == "final-model.pt", "Unexpected pretraining export filename")
     model_file = path / header["model_file"]
     require(sha(model_file) == header["model_sha256"], "Pretraining export checksum mismatch")
@@ -115,7 +123,7 @@ def train(cli):
     from colab_full_pretrain import git_revision
     from drama_ir2r import (NUMERICS, author_args, canonical_boundary, complete_tour, configure_numerics,
                             digest, restore_runtime, runtime_state, static_environment)
-    from drama_mount_guard import validate_separate_roots
+    from drama_mount_guard import checkpoint_mount_contract, validate_separate_roots
     from drama_pretrain import (atomic_torch, code_manifest, json_sha, runtime_identity, seed_all,
                                 space_guard, tensor_bytes, verified_copy, write_json)
     require(os.environ.get("PYTHONHASHSEED") == "0", "Set PYTHONHASHSEED=0 before starting Python")
@@ -136,7 +144,7 @@ def train(cli):
         pre = cli.pretrain.resolve()
         if not all((pre / f).is_file() for f in ("handoff.json", "final-model.pt")):
             pre = cli.backup_root.resolve() / "pretrain"
-        header, model_file = verify_handoff(pre)
+        header, model_file = verify_handoff(pre, cli.world_model_backend)
         seed_all(0)
         batch = cli.batch_size
         target = BUDGET[batch]
@@ -154,7 +162,7 @@ def train(cli):
         runtime["bert_config"].pop("resolved_path")
         if runtime["mattersim"]:
             runtime["mattersim"].pop("path")
-        mount = {k: store.mount[k] for k in ("backend", "mount_root", "filesystem", "source")}
+        mount = checkpoint_mount_contract(store.mount)
         contract = {"stage": "memoir-full-ir2r-v1", "pretrain_handoff_sha256": json_sha(header),
                     "pretrain_model_sha256": header["model_sha256"], "architecture": header["architecture"],
                     "assets": assets, "tour_coverage": coverage, "environment_sha256": digest(static_environment(env)),
@@ -235,9 +243,7 @@ def train(cli):
             state = agent.vln_bert.vln_bert.state_dict()
             export_size = tensor_bytes(state) + 32 * 1024**2
             if not (backup / "final-model.pt").exists():
-                # Filesystem backups can share a physical device with local outputs.
-                copies = 2 if run.stat().st_dev == backup.stat().st_dev else 1
-                space_guard((run, backup), store.min_free_gib, copies * export_size)
+                store.check_space_for_pair(export_size)
                 atomic_torch(final_file, {k: v.detach().cpu() for k, v in state.items()})
                 store.backup_check()
                 model_sha = verified_copy(final_file, backup / final_file.name)
@@ -268,9 +274,10 @@ def parse(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--datasets", type=Path, required=True, help="Parent of R2R/")
     p.add_argument("--pretrain", type=Path, required=True, help="Pretraining run containing handoff.json")
+    p.add_argument("--world-model-backend", choices=BACKENDS, default=MAMBA2)
     p.add_argument("--run-root", type=Path, required=True)
     p.add_argument("--backup-root", type=Path, required=True)
-    p.add_argument("--backup-backend", choices=("drive", "filesystem"), required=True)
+    p.add_argument("--backup-backend", choices=("drive", "filesystem", "runtime-local"), required=True)
     p.add_argument("--batch-size", type=int, choices=BUDGET, default=8)
     p.add_argument("--auto-batch", action="store_true", help="Start at 8. Only CUDA OOM starts a new lower-batch experiment")
     p.add_argument("--save-every", type=int, default=100)

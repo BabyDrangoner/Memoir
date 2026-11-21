@@ -2,6 +2,7 @@
 
 from transformers import (BertConfig, BertTokenizer)
 from vlnbert.vilmodel import GlocalTextPathNavCMT
+from vlnbert.drama_mamba2 import TEMPORAL_HYBRID_BACKEND, WORLD_MODEL_PREFIXES
 from transformers import PretrainedConfig
 import copy
 import torch
@@ -11,6 +12,25 @@ import os
 def get_tokenizer(args):
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     return tokenizer
+
+
+def select_drama_weights(weights, backend, initialize_world):
+    keys = {k.removeprefix('bert.') for k in weights}
+    if any(k.startswith('prior.layers.0.') for k in keys):
+        has_temporal = any(k.startswith('prior.layers.') and k.endswith(('.qkv.weight', '.relative_bias.weight'))
+                           for k in keys)
+        if has_temporal != (backend == TEMPORAL_HYBRID_BACKEND):
+            raise ValueError('Checkpoint and requested temporal backbone differ')
+        if has_temporal:
+            temporal_keys = {k for k in keys if k.startswith('prior.layers.3.')}
+            expected = {'prior.layers.3.' + name for name in ('qkv.weight', 'out_proj.weight', 'relative_bias.weight')}
+            layers = {k.split('.')[2] for k in keys if k.startswith('prior.layers.')}
+            if layers != {'0', '1', '2', '3'} or temporal_keys != expected:
+                raise ValueError('Incomplete or incompatible temporal hybrid checkpoint')
+        return weights
+    if not initialize_world:
+        raise ValueError('A pretrained Drama checkpoint is required. Enable initialize_drama_world only for fresh pretraining.')
+    return {k: v for k, v in weights.items() if not k.removeprefix('bert.').startswith(WORLD_MODEL_PREFIXES)}
 
 
 def get_vlnbert_models(args, config=None):
@@ -39,14 +59,9 @@ def get_vlnbert_models(args, config=None):
     for option, default in [('drama_d_model', 512), ('drama_layers', 2),
                             ('drama_d_state', 16), ('drama_headdim', 64), ('drama_dropout', 0.1)]:
         setattr(vis_config, option, getattr(args, option, default))
-    if vis_config.world_model_backend == 'drama_mamba2':
-        from vlnbert.drama_mamba2 import WORLD_MODEL_PREFIXES
-        is_drama = any(k.removeprefix('bert.').startswith('prior.layers.0.') for k in new_ckpt_weights)
-        if not is_drama:
-            if not getattr(args, 'initialize_drama_world', False):
-                raise ValueError('A pretrained Drama checkpoint is required; old TSSM weights cannot silently initialize a Drama IR2R run. Use initialize_drama_world only for the explicit fresh pretraining stage.')
-            new_ckpt_weights = {k: v for k, v in new_ckpt_weights.items()
-                                if not k.removeprefix('bert.').startswith(WORLD_MODEL_PREFIXES)}
+    if vis_config.world_model_backend in ('drama_mamba2', TEMPORAL_HYBRID_BACKEND):
+        new_ckpt_weights = select_drama_weights(new_ckpt_weights, vis_config.world_model_backend,
+                                                getattr(args, 'initialize_drama_world', False))
 
     if args.tokenizer == 'xlm':
         vis_config.type_vocab_size = 2
@@ -76,4 +91,10 @@ def get_vlnbert_models(args, config=None):
         config=vis_config,
         state_dict=new_ckpt_weights)
 
+    if vis_config.world_model_backend == TEMPORAL_HYBRID_BACKEND:
+        supplied = {k.removeprefix('bert.') for k in new_ckpt_weights}
+        if any(k.startswith('prior.') for k in supplied):
+            required = {k for k in visual_model.state_dict() if k.startswith(WORLD_MODEL_PREFIXES)}
+            if required - supplied:
+                raise ValueError(f'Missing pretrained hybrid parameters: {sorted(required - supplied)}')
     return visual_model

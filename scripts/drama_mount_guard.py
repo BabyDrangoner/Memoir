@@ -1,8 +1,19 @@
 """Vendored production mount checks; no local-test bypass exposed by launcher."""
 from pathlib import Path
 import re
+from uuid import UUID
 from typing import Callable
 from drama_checkpoint_store import CheckpointStore
+
+STORAGE_BACKENDS = ("drive", "filesystem", "runtime-local")
+
+
+def checkpoint_mount_contract(mount: dict) -> dict:
+    keys = ("backend", "mount_root", "filesystem", "source")
+    if mount["backend"] == "runtime-local":
+        keys += ("boot_id", "mount_id", "device", "mount_point")
+    return {key: mount[key] for key in keys}
+
 
 def backup_mount_identity(path: Path, *, backend: str = "drive", allow_local: bool = False) -> dict:
     """Validate an explicit backup backend and identify its deepest Linux mount.
@@ -10,11 +21,11 @@ def backup_mount_identity(path: Path, *, backend: str = "drive", allow_local: bo
     Filesystem backup protects process/restart recovery. A directory on the same
     disk is not protection against disk failure. No directory is created here.
     """
-    if backend not in {"drive", "filesystem"}:
-        raise ValueError("backup backend must be drive or filesystem")
+    if backend not in STORAGE_BACKENDS:
+        raise ValueError(f"Unknown checkpoint storage backend {backend!r}")
     if allow_local:
         if backend != "drive":
-            raise ValueError("filesystem backup cannot use the test-only local bypass")
+            raise ValueError(f"{backend} backup cannot use the test-only local bypass")
         return {"backend": "test-only", "verification": "local-filesystem-test"}
     path = Path(path).expanduser()
     if backend == "filesystem" and not path.is_dir():
@@ -44,6 +55,17 @@ def backup_mount_identity(path: Path, *, backend: str = "drive", allow_local: bo
     if len(matches) > 1:
         raise RuntimeError("ambiguous stacked backup mounts at the same path; refusing to select a covered mount")
     identity = matches[0] if matches else None
+    if backend == "runtime-local":
+        content = Path("/content")
+        if (not target.is_relative_to(content) or target.is_relative_to(content / "drive")
+                or identity is None or not content.is_relative_to(identity["mount_point"])):
+            raise RuntimeError(f"runtime-local checkpoints require the Colab /content runtime disk: {target}")
+        if (identity["filesystem"] not in {"overlay", "fuse.overlayfs", "fuse-overlayfs", "ext4", "xfs", "btrfs"}
+                or "ro" in identity["mount_options"]):
+            raise RuntimeError(f"runtime-local checkpoints require a writable local disk: {target}")
+        identity["boot_id"] = str(UUID(Path("/proc/sys/kernel/random/boot_id").read_text().strip()))
+        identity["verification"] = "ephemeral-runtime-mount-readback-sha256"
+        return identity
     if backend == "drive" and (identity is None or identity["filesystem"] not in {"fuse.drivefs", "fuse.drive"}):
         raise RuntimeError(f"Google Drive is not mounted at backup destination: {path}")
     if backend == "filesystem":

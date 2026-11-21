@@ -4,13 +4,14 @@ set -euo pipefail
 mode="${1:?choose start, resume-pretrain, or resume-ir2r}"
 : "${MEMOIR_DATASETS:?set the parent of R2R/}"
 : "${MEMOIR_RUN_ROOT:?set a new local experiment root}"
-: "${MEMOIR_BACKUP_ROOT:?set the persistent experiment root}"
-: "${MEMOIR_BACKUP_BACKEND:?choose drive or filesystem}"
+: "${MEMOIR_BACKUP_ROOT:?set the separate verified checkpoint copy directory}"
+: "${MEMOIR_BACKUP_BACKEND:?choose drive, filesystem, or runtime-local}"
 
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo"
 export PYTHONHASHSEED=0 CUBLAS_WORKSPACE_CONFIG=:4096:8
 common=(--run-root "$MEMOIR_RUN_ROOT" --backup-root "$MEMOIR_BACKUP_ROOT"
+        --world-model-backend "${MEMOIR_WORLD_MODEL_BACKEND:-drama_mamba2}"
         --backup-backend "$MEMOIR_BACKUP_BACKEND")
 pre=(python -u scripts/colab_full_pretrain.py --asset-root "$MEMOIR_DATASETS/R2R" "${common[@]}")
 post=(python -u scripts/colab_full_ir2r.py --datasets "$MEMOIR_DATASETS"

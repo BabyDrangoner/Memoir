@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import colab_full_ir2r as full
+from colab_full_architecture import TEMPORAL_HYBRID, architecture
 
 
 def arguments(tmp_path):
@@ -40,6 +41,36 @@ def test_handoff_rejects_corrupt_or_partial_pretraining(tmp_path):
         manifest.write_text(json.dumps({**header, k: bad}))
         with pytest.raises(RuntimeError):
             full.verify_handoff(tmp_path)
+
+
+def test_temporal_backend_matches_pretrain_and_ir2r(tmp_path):
+    from drama_ir2r import author_args
+    from drama_pretrain import json_sha, model_args
+
+    layout = architecture(full.ARCH, TEMPORAL_HYBRID)
+    cfg = {**full.ARCH, "world_model_backend": TEMPORAL_HYBRID, "init_checkpoint": "author.pt"}
+    assert model_args(cfg).world_model_backend == TEMPORAL_HYBRID
+    args = author_args({"datasets": str(tmp_path), "run_dir": str(tmp_path)}, layout)
+    assert (args.world_model_backend, args.drama_layers, args.drama_d_model) == (TEMPORAL_HYBRID, 4, 768)
+
+    model = tmp_path / "final-model.pt"
+    model.write_bytes(b"fixture")
+    identity = {"contract": {"config": cfg, "architecture": layout, "assets": {}}}
+    (tmp_path / "identity.json").write_text(json.dumps(identity))
+    header = {"complete": True, "step": 5000, "selection": "fixed-final-step", "assets": {},
+              "model_file": model.name, "model_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+              "architecture": layout, "identity_sha256": json_sha(identity)}
+    manifest = tmp_path / "handoff.json"
+    manifest.write_text(json.dumps(header))
+    assert full.verify_handoff(tmp_path, TEMPORAL_HYBRID) == (header, model)
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        full.verify_handoff(tmp_path)
+    manifest.write_text(json.dumps({**header, "architecture": full.ARCH}))
+    with pytest.raises(RuntimeError, match="checkpoint"):
+        full.verify_handoff(tmp_path, TEMPORAL_HYBRID)
+    manifest.write_text(json.dumps({**header, "identity_sha256": "0" * 64}))
+    with pytest.raises(RuntimeError, match="saved pretraining experiment"):
+        full.verify_handoff(tmp_path, TEMPORAL_HYBRID)
 
 
 @pytest.mark.parametrize("return_codes,expected_batches", [
