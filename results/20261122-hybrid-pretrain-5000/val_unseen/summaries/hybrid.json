@@ -1,0 +1,123 @@
+{
+  "schema": "memoir-paired-world-prediction-v1",
+  "model": "hybrid",
+  "split": "val_unseen",
+  "seed": 0,
+  "sampling": "common-normal-v1",
+  "weights_sha256": "22c212dcda838d98302b15d875fb53a63fb7857824b23846f62355b41089cdb1",
+  "source_commit": "9098e42f6b1fb26bfc5809e265c7ebd2a86dced3",
+  "checkpoint_epoch": null,
+  "pretrain_step": 5000,
+  "checkpoint_stage": "world-model-pretraining",
+  "path_count": 783,
+  "scans": 11,
+  "tours": 33,
+  "expected_pairs": [
+    11664,
+    9315,
+    6966,
+    4617,
+    2292
+  ],
+  "forecast_sha256": "1b6d1c7be9243db6dba8ca0d3e907a674a26e78a88181c532c3b004223e4a212",
+  "parameters_and_buffers_loaded": 633,
+  "inputs": {
+    "annotations/R2R_val_unseen_enc.json": "840569867584004223e57f196c3d6e72a3081317e5fffd338dccbea21d29f0b3",
+    "tours_iVLN.json": "0ef3b8582e4389a800a4eabc37b81cc15486f86bccd748d168e0270015a49125",
+    "annotations/scanvp_candview_relangles.json": "cead28ce0d9b248766c5295338e0809eeedfec499b1eafd39e15e63609394d14",
+    "features/clip_vit-b16_mp3d_hm3d_gibson.hdf5": "35b6e1658f2283df15caa8b01e5f2be32ff59f9cc314721fceafbf88dec4b983",
+    "connectivity/pLe4wQe7qrG_connectivity.json": "ae68e194ace32a82a14557ca8dc511df8d8e157bf0809a115f0169c4b6c05dfb",
+    "connectivity/8194nk5LbLH_connectivity.json": "a296581317baf7ef135424ce3fa181ef722f0568d1acaa4a1be41a0ab9028e29",
+    "connectivity/x8F5xyUWy9e_connectivity.json": "86f9ebff3b183d6e31e3efa072b6f2d78317b0e175dc77206ded243bfbf82cd2",
+    "connectivity/Z6MFQCViBuw_connectivity.json": "2c0646677c1042939ee32bf725e98b101334bcd381ac8354277c3c98231e691c",
+    "connectivity/EU6Fwq7SyZv_connectivity.json": "24783fe20e9cad1785097f7c079928df4fa13f62fe57c9f03539b66461fe723b",
+    "connectivity/QUCTc6BB5sX_connectivity.json": "9a981fe276f158d4df3cf9cb11a88eaba14af152608c50d8b1decdd5b0234c07",
+    "connectivity/X7HyMhZNoso_connectivity.json": "b1c40a2686badb0eec29e1f2c1406714a385e7563f3f1abe20e610a548e1cb2a",
+    "connectivity/2azQ1b91cZZ_connectivity.json": "76a3bc8ac818117334a8a31b6adad5ab65947bda27f755bdc478690b171499b8",
+    "connectivity/TbHJrupSAjP_connectivity.json": "a78bdbec967ee368644a940f79fdaeb4a2922e11a477fd08471990a83eaf23f3",
+    "connectivity/oLBMNvg9in8_connectivity.json": "7037419d71cf679fcd7115802c32f4b12caea3d4aea5d2dec7e21ab898ceb09b",
+    "connectivity/zsNo4HB9uLZ_connectivity.json": "2b345bff1411860f5ccbbef079f8ff327c271c8ebc10947771d1cea02699d5a2"
+  },
+  "bert_config_sha256": "7160e1553ad2ca51d8c1cb066be533db31826e12d173824c1bb0cb1a4f187d20",
+  "prediction_sha256": "fca12ade1fe2bcc9ffb6d091c22108eb9bd813e44fbd4f989cf9310bcc9d665c",
+  "instructions": 2349,
+  "by_horizon": {
+    "1": {
+      "pairs": 11664,
+      "instructions": 2349,
+      "top1": 0.4930555555555556,
+      "mrr": 0.6979703524070808,
+      "chance": 0.16690427199686458,
+      "candidates": {
+        "4": 72,
+        "5": 3336,
+        "6": 3450,
+        "7": 4806
+      },
+      "distance_mae": 1.1783192422467608,
+      "distance_rmse": 1.6430387514025386
+    },
+    "2": {
+      "pairs": 9315,
+      "instructions": 2349,
+      "top1": 0.3888352120236178,
+      "mrr": 0.6289916417452649,
+      "chance": 0.16581243769649565,
+      "candidates": {
+        "4": 48,
+        "5": 2502,
+        "6": 2760,
+        "7": 4005
+      },
+      "distance_mae": 0.9963626648304201,
+      "distance_rmse": 1.4188301784913264
+    },
+    "3": {
+      "pairs": 6966,
+      "instructions": 2349,
+      "top1": 0.36534596612115994,
+      "mrr": 0.604211954664151,
+      "chance": 0.16398425003076164,
+      "candidates": {
+        "4": 24,
+        "5": 1668,
+        "6": 2070,
+        "7": 3204
+      },
+      "distance_mae": 0.7661946369498117,
+      "distance_rmse": 1.1373834512212775
+    },
+    "4": {
+      "pairs": 4617,
+      "instructions": 2325,
+      "top1": 0.3835824128221789,
+      "mrr": 0.6111183308064401,
+      "chance": 0.16029580123147372,
+      "candidates": {
+        "5": 834,
+        "6": 1380,
+        "7": 2403
+      },
+      "distance_mae": 0.4223489862079276,
+      "distance_rmse": 0.682363995567072
+    },
+    "5": {
+      "pairs": 2292,
+      "instructions": 1491,
+      "top1": 0.4271378708551483,
+      "mrr": 0.6344168121000582,
+      "chance": 0.150024931438544,
+      "candidates": {
+        "6": 690,
+        "7": 1602
+      },
+      "distance_mae": 0.06515275020140952,
+      "distance_rmse": 0.08483777354335867
+    }
+  },
+  "batch_size": 24,
+  "elapsed_seconds": 108.28187456500018,
+  "device": "cuda",
+  "torch_version": "2.5.1+cu121",
+  "gpu_name": "Tesla T4"
+}
