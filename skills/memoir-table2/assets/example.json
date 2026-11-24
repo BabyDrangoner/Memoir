@@ -1,0 +1,81 @@
+{
+  "caption": "IR2R navigation performance of Memoir world models",
+  "decimals": 2,
+  "notes": [
+    "TL and NE are in meters. Other metrics use a 0-100 scale. Bold marks the highest SR or SPL within each split.",
+    "Checkpoints by row: 15,001 (train_dev best), 10,103 (final), 5,079 (train_dev best).",
+    "All runs use seed 0, batch 4, 1,011 seen and 2,349 unseen instructions. Retrieval cap P = 20, 10, 10 by row.",
+    "The first and third models use train_fit; the second uses full training tours. Training budgets also differ."
+  ],
+  "rows": [
+    {
+      "method": "Memoir + Mamba-2 (2 × 512)",
+      "seen": [
+        11.446773918276273,
+        3.50680023522992,
+        71.9728749914261,
+        67.85361028684471,
+        62.83489043238982,
+        60.235001654333956
+      ],
+      "unseen": [
+        10.4582022535731,
+        2.716174201562554,
+        77.64373799959009,
+        75.18092805449128,
+        {
+          "value": 70.6787761320076,
+          "bold": true
+        },
+        65.06251860410457
+      ]
+    },
+    {
+      "method": "Memoir + Mamba-2 (4 × 768)",
+      "seen": [
+        11.83159927637262,
+        3.204975426353016,
+        72.93380317820235,
+        69.53511374876359,
+        {
+          "value": 64.46843714234687,
+          "bold": true
+        },
+        60.044893745522366
+      ],
+      "unseen": [
+        10.723150877882512,
+        2.7023980230919027,
+        77.2746146154948,
+        {
+          "value": 75.73435504469987,
+          "bold": true
+        },
+        70.54374158885523,
+        63.346453200792496
+      ]
+    },
+    {
+      "method": "Memoir + Hybrid\n(3 Mamba-2 + 1 Attention, 768)",
+      "seen": [
+        12.329545546027381,
+        3.265633705126358,
+        71.95520625430626,
+        {
+          "value": 70.42532146389713,
+          "bold": true
+        },
+        64.23586382833865,
+        58.50304767726154
+      ],
+      "unseen": [
+        11.279334241733984,
+        2.663463848555816,
+        76.62959222949974,
+        75.56406981694337,
+        70.03348943480559,
+        61.91000889583299
+      ]
+    }
+  ]
+}

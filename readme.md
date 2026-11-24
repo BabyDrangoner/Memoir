@@ -301,3 +301,17 @@ If you find this work useful, please cite:
   pages={9035-9049}
 }
 ```
+
+## Table II rendering skill
+
+The reusable [memoir-table2 skill](skills/memoir-table2/SKILL.md) includes the table layout, JSON input schema, renderer, and an example using archived navigation results. It produces a Methods column and grouped Val Seen / Val Unseen metrics in PNG, vector PDF, and Markdown. The example is illustrative; use the checkpoints and metrics selected for your experiment.
+
+From the repository root:
+
+```bash
+python skills/memoir-table2/scripts/render_table.py \
+  skills/memoir-table2/assets/example.json \
+  --output outputs/table-ii --formats png,pdf,md
+```
+
+PNG/PDF rendering requires Matplotlib (`python -m pip install matplotlib`). Markdown-only output (`--formats md`) uses the Python standard library. For tables with Chinese text, provide a suitable installed font with `--font /path/to/font.ttf`. To keep a white background and emphasize selected values only, omit row-level `highlight` and set `"bold": true` on the desired cells. For the current project style, mark each column's best value only among the user's methods (minimum TL/NE; maximum nDTW/SR/SPL/t-nDTW; include ties), leaving author baseline rows outside that comparison unless requested. The renderer uses explicit input flags; it does not infer winners. See the [input reference](skills/memoir-table2/references/input.md) for details.

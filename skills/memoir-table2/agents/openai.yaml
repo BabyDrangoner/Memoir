@@ -1,0 +1,4 @@
+interface:
+  display_name: "Memoir Table II 表格"
+  short_description: "按 Memoir Table II 排版 seen/unseen 双分组科研结果表"
+  default_prompt: "使用 $memoir-table2 将这些导航结果绘制成原论文 Table II 风格的双分组表格。"
