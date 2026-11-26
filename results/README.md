@@ -1,5 +1,11 @@
 # Memoir 实验结果
 
+## 世界模型导航结果对比（Table II）
+
+![Memoir 世界模型在 Val Seen 和 Val Unseen 上的导航结果对比](20261124-world-model-comparison/table-ii.png)
+
+[查看原尺寸 PNG（2962 × 1138）](20261124-world-model-comparison/table-ii.png)。由现有 Table II PDF 以 300 dpi 导出，保留原表格数值、加粗及实验设置脚注。
+
 ## 混合世界模型预训练第 5,000 步
 
 3 层 Mamba-2 和 1 层因果自注意力，隐藏宽度为 768。在 Colab T4 上固定权重和随机种子，沿专家轨迹比较 1、3、5 步的视点 Top-1、MRR 和剩余距离误差。对照模型为作者发布的 IR2R Transformer 和 IR2R 后训练第 1,245 步的纯 Mamba-2。
