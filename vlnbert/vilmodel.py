@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch import Tensor, device, dtype
 
 from transformers import BertPreTrainedModel, GPT2Config, T5Config
-from vlnbert.drama_mamba2 import DramaMamba2Prior, TEMPORAL_HYBRID_BACKEND, freeze_encoders
+from vlnbert.drama_mamba2 import DramaMamba2Prior, TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND, freeze_encoders
 from utils.transformer_decoder import TransformerDecoderModel, T5DecoderModel
 
 from utils.ops import create_transformer_encoder, extend_neg_masks, gen_seq_masks, \
@@ -980,7 +980,7 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
             self.bottleneck_size = 768
             self.lang_init = Project(config.hidden_size, config.hidden_size, self.deter_size)
             self.world_model_backend = getattr(config, 'world_model_backend', 'tssm')
-            if self.world_model_backend in ('drama_mamba2', TEMPORAL_HYBRID_BACKEND):
+            if self.world_model_backend in ('drama_mamba2', TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND):
                 self.prior = DramaMamba2Prior(
                     self.stoch_size, self.stoch_discrete, config.hidden_size, self.deter_size,
                     d_model=getattr(config, 'drama_d_model', 512),
@@ -988,7 +988,9 @@ class GlocalTextPathNavCMT(BertPreTrainedModel):
                     d_state=getattr(config, 'drama_d_state', 16),
                     headdim=getattr(config, 'drama_headdim', 64),
                     dropout=getattr(config, 'drama_dropout', 0.1),
-                    temporal_attention=self.world_model_backend == TEMPORAL_HYBRID_BACKEND)
+                    temporal_attention=self.world_model_backend in (TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND),
+                    loop_iterations=(getattr(config, 'drama_loop_iterations', 2)
+                                     if self.world_model_backend == TEMPORAL_LOOP_BACKEND else None))
             elif self.world_model_backend == 'tssm':
                 self.prior = TSSMPriorBlock(self.stoch_size, self.stoch_discrete, config.hidden_size, self.deter_size)
             else:

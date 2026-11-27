@@ -20,6 +20,7 @@ from torch.nn import functional as F
 WORLD_MODEL_PREFIXES = ('lang_init.', 'prior.', 'posterior.', 'to_vis_embed.',
                         'to_reward.', 'obs_transform.')
 TEMPORAL_HYBRID_BACKEND = 'drama_mamba2_temporal_hybrid'
+TEMPORAL_LOOP_BACKEND = 'drama_mamba2_temporal_loop'
 
 
 class GatedRMSNorm(nn.Module):
@@ -159,6 +160,40 @@ class CausalTemporalAttention(nn.Module):
         return output, (k, v)
 
 
+    def refine(self, inputs, norm, dropout, cache=None, iterations=2):
+        """Refine queries against fixed source K/V without advancing time again.
+
+        The first pass is exactly the ordinary pre-norm attention residual.
+        Subsequent passes update only the query/residual representation. K/V
+        are derived from the pre-refinement source once and appended once per
+        trajectory position, including in full-sequence and chunked execution.
+        This is fixed-memory looped attention, with no added FFN or parameters.
+        """
+        if type(iterations) is not int or iterations < 1:
+            raise ValueError('Loop iterations must be a positive integer')
+        delta, memory = self(norm(inputs), cache)
+        x = inputs + dropout(delta)
+        if iterations == 1:
+            return x, memory
+        k, v = memory
+        batch, steps, width = inputs.shape
+        past = 0 if cache is None else cache[0].size(2)
+        q_pos = torch.arange(past, past + steps, device=inputs.device)
+        k_pos = torch.arange(k.size(2), device=inputs.device)
+        distance = q_pos[:, None] - k_pos[None, :]
+        bias = self.relative_bias(self._relative_buckets(distance)).permute(2, 0, 1)
+        for _ in range(1, iterations):
+            # Slice the shared Q weights; never re-project or append source K/V.
+            q = F.linear(norm(x), self.qkv.weight[:width])
+            q = q.view(batch, steps, self.n_heads, self.head_dim).transpose(1, 2)
+            scores = (q @ k.transpose(-1, -2)) * (self.head_dim ** -0.5)
+            scores = (scores.float() + bias.float()).masked_fill(distance < 0, float('-inf'))
+            attended = scores.softmax(-1).to(v.dtype) @ v
+            delta = self.out_proj(attended.transpose(1, 2).reshape(batch, steps, width))
+            x = x + dropout(delta)
+        return x, memory
+
+
 class DramaMamba2Prior(nn.Module):
     """Language-conditioned causal Mamba-2 replacing only Memoir's TSSM prior.
 
@@ -169,10 +204,17 @@ class DramaMamba2Prior(nn.Module):
     """
     def __init__(self, stoch_size=96, stoch_discrete=False, hidden_size=768,
                  deter_size=672, d_model=512, n_layers=2, d_state=16,
-                 headdim=64, dropout=0.1, temporal_attention=False):
+                 headdim=64, dropout=0.1, temporal_attention=False, loop_iterations=None):
         super().__init__()
         if temporal_attention and (n_layers, d_model) != (4, 768):
             raise ValueError('The temporal hybrid requires four layers of width 768')
+        if loop_iterations is not None:
+            if not temporal_attention or type(loop_iterations) is not int or loop_iterations < 1:
+                raise ValueError('Loop refinement requires temporal attention and a positive integer depth')
+            # Persist depth so raw state_dict exports cannot masquerade as an
+            # ordinary hybrid, or silently load with a different loop count.
+            self.register_buffer('_loop_iterations', torch.tensor(loop_iterations, dtype=torch.int64))
+        self.loop_iterations = loop_iterations
         self.hidden_size, self.deter_size = hidden_size, deter_size
         self.d_model, self.n_layers = d_model, n_layers
         latent = stoch_size * (stoch_discrete or 1) + deter_size
@@ -194,6 +236,16 @@ class DramaMamba2Prior(nn.Module):
         self.dense = nn.Sequential(nn.Linear(deter_size, hidden_size), nn.GELU(), nn.Linear(hidden_size, hidden_size))
         self._norm = nn.LayerNorm(hidden_size)
         self.mu_std = nn.Linear(hidden_size, stoch_size * (stoch_discrete or 2))
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        marker = state_dict.get(prefix + '_loop_iterations')
+        if marker is not None and (self.loop_iterations is None or not isinstance(marker, torch.Tensor)
+                or marker.dtype != torch.int64 or marker.ndim != 0
+                or marker.item() != self.loop_iterations):
+            error_msgs.append('Checkpoint loop depth differs from the configured temporal backbone')
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                     missing_keys, unexpected_keys, error_msgs)
 
     def forward(self, prev_states, encoder_embeds, encoder_attention_mask, past_key_values=None):
         if prev_states.ndim != 3 or prev_states.shape[1] < 1:
@@ -220,8 +272,11 @@ class DramaMamba2Prior(nn.Module):
         new_cache = []
         for i, (norm, layer) in enumerate(zip(self.pre_norms, self.layers)):
             layer_cache = None if cache is None else cache[i][:2]
-            y, state = layer(norm(x), layer_cache)
-            x = x + self.dropout(y)
+            if self.loop_iterations is not None and i == self.n_layers - 1:
+                x, state = layer.refine(x, norm, self.dropout, layer_cache, self.loop_iterations)
+            else:
+                y, state = layer(norm(x), layer_cache)
+                x = x + self.dropout(y)
             new_cache.append((state[0], state[1], keys, values))
         deter = self.to_deter(self.final_norm(x[:, -1]))
         statistics = self.mu_std(F.gelu(self._norm(self.dense(deter))))

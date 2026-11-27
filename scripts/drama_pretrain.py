@@ -88,7 +88,7 @@ def verify_storage_mount(cfg,expected=None):
     return identity
 
 def model_args(cfg):
-    return SimpleNamespace(bert_ckpt_file=cfg['init_checkpoint'], tokenizer='bert',
+    args = SimpleNamespace(bert_ckpt_file=cfg['init_checkpoint'], tokenizer='bert',
         image_feat_size=512, angle_feat_size=4, obj_feat_size=0,
         num_l_layers=9, num_pano_layers=2, num_x_layers=4, graph_sprels=True,
         fusion='dynamic', fix_lang_embedding=True, fix_pano_embedding=True,
@@ -96,6 +96,14 @@ def model_args(cfg):
         world_model_backend=cfg.get('world_model_backend', 'drama_mamba2'), drama_d_model=cfg.get('d_model',512),
         drama_layers=cfg.get('layers',2), drama_d_state=cfg.get('d_state',16),
         drama_headdim=cfg.get('headdim',64), drama_dropout=cfg.get('drama_dropout',.1))
+    if args.world_model_backend == 'drama_mamba2_temporal_loop':
+        loops = cfg.get('loop_iterations')
+        if type(loops) is not int or loops < 1:
+            raise ValueError('The temporal loop backend requires positive integer loop_iterations')
+        args.drama_loop_iterations = loops
+    elif 'loop_iterations' in cfg:
+        raise ValueError('loop_iterations belongs only to the temporal loop backend')
+    return args
 
 def seed_all(seed):
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)

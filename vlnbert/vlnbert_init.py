@@ -2,7 +2,7 @@
 
 from transformers import (BertConfig, BertTokenizer)
 from vlnbert.vilmodel import GlocalTextPathNavCMT
-from vlnbert.drama_mamba2 import TEMPORAL_HYBRID_BACKEND, WORLD_MODEL_PREFIXES
+from vlnbert.drama_mamba2 import TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND, WORLD_MODEL_PREFIXES
 from transformers import PretrainedConfig
 import copy
 import torch
@@ -14,12 +14,23 @@ def get_tokenizer(args):
     return tokenizer
 
 
-def select_drama_weights(weights, backend, initialize_world):
-    keys = {k.removeprefix('bert.') for k in weights}
+def select_drama_weights(weights, backend, initialize_world, loop_iterations=None):
+    normalized = {k.removeprefix('bert.'): v for k, v in weights.items()}
+    keys = set(normalized)
+    is_loop = backend == TEMPORAL_LOOP_BACKEND
+    if is_loop and (type(loop_iterations) is not int or loop_iterations < 1):
+        raise ValueError('A loop checkpoint requires an explicit positive integer loop depth')
+    marker = normalized.get('prior._loop_iterations')
+    if 'prior._loop_iterations' in keys:
+        if (not is_loop or not isinstance(marker, torch.Tensor) or marker.ndim != 0
+                or marker.dtype != torch.int64 or marker.item() != loop_iterations):
+            raise ValueError('Checkpoint loop identity differs from the requested backbone/depth')
+    elif is_loop and any(k.startswith('prior.layers.0.') for k in keys):
+        raise ValueError('Unmarked hybrid checkpoint is not a trained loop checkpoint')
     if any(k.startswith('prior.layers.0.') for k in keys):
         has_temporal = any(k.startswith('prior.layers.') and k.endswith(('.qkv.weight', '.relative_bias.weight'))
                            for k in keys)
-        if has_temporal != (backend == TEMPORAL_HYBRID_BACKEND):
+        if has_temporal != (backend in (TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND)):
             raise ValueError('Checkpoint and requested temporal backbone differ')
         if has_temporal:
             temporal_keys = {k for k in keys if k.startswith('prior.layers.3.')}
@@ -56,12 +67,20 @@ def get_vlnbert_models(args, config=None):
     vis_config.world_model_type = 'tssm'
     vis_config.world_model_backend = getattr(args, 'world_model_backend', 'tssm')
     vis_config.freeze_encoders = getattr(args, 'freeze_encoders', False)
+    if vis_config.world_model_backend == TEMPORAL_LOOP_BACKEND:
+        depth = getattr(args, 'drama_loop_iterations', 2)
+        if type(depth) is not int or depth < 1:
+            raise ValueError('drama_loop_iterations must be a positive integer')
+        vis_config.drama_loop_iterations = depth
+    elif getattr(args, 'drama_loop_iterations', None) is not None:
+        raise ValueError('Loop iterations are only valid for the temporal loop backend')
     for option, default in [('drama_d_model', 512), ('drama_layers', 2),
                             ('drama_d_state', 16), ('drama_headdim', 64), ('drama_dropout', 0.1)]:
         setattr(vis_config, option, getattr(args, option, default))
-    if vis_config.world_model_backend in ('drama_mamba2', TEMPORAL_HYBRID_BACKEND):
+    if vis_config.world_model_backend in ('drama_mamba2', TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND):
         new_ckpt_weights = select_drama_weights(new_ckpt_weights, vis_config.world_model_backend,
-                                                getattr(args, 'initialize_drama_world', False))
+                                                getattr(args, 'initialize_drama_world', False),
+                                                getattr(vis_config, 'drama_loop_iterations', None))
 
     if args.tokenizer == 'xlm':
         vis_config.type_vocab_size = 2
@@ -91,7 +110,7 @@ def get_vlnbert_models(args, config=None):
         config=vis_config,
         state_dict=new_ckpt_weights)
 
-    if vis_config.world_model_backend == TEMPORAL_HYBRID_BACKEND:
+    if vis_config.world_model_backend in (TEMPORAL_HYBRID_BACKEND, TEMPORAL_LOOP_BACKEND):
         supplied = {k.removeprefix('bert.') for k in new_ckpt_weights}
         if any(k.startswith('prior.') for k in supplied):
             required = {k for k in visual_model.state_dict() if k.startswith(WORLD_MODEL_PREFIXES)}
