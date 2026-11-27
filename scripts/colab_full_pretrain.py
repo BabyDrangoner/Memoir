@@ -4,6 +4,7 @@ import argparse
 from array import array
 from collections import defaultdict
 from functools import lru_cache
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ from torch.nn import functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 import drama_pretrain as pre
-from colab_full_architecture import BACKENDS, MAMBA2, TEMPORAL_HYBRID, architecture
+from colab_full_architecture import BACKENDS, MAMBA2, TEMPORAL_HYBRID, TEMPORAL_LOOP, architecture
 from colab_full_storage import FullStore
 from drama_mount_guard import STORAGE_BACKENDS, checkpoint_mount_contract
 
@@ -283,6 +284,39 @@ def restore_weights(model, trainable, state, frozen_path):
     model.load_state_dict(frozen, strict=True)
 
 
+def frozen_fingerprints(model, names):
+    """Audit every frozen tensor, including persistent loop-identity buffers."""
+    state = model.state_dict()
+    result = {}
+    for name in sorted(names):
+        tensor = state[name].detach().cpu().contiguous()
+        result[name] = dict(shape=list(tensor.shape), dtype=str(tensor.dtype),
+                            sha256=hashlib.sha256(tensor.numpy().tobytes()).hexdigest())
+    return result
+
+
+def audit_gradients(model, trainable):
+    """Fail before updating if the exact trainable partition or gradients drift."""
+    nonzero = []
+    for name, parameter in model.named_parameters():
+        expected = name in trainable
+        if parameter.requires_grad != expected:
+            raise RuntimeError("Gradient partition changed: " + name)
+        if not expected:
+            if parameter.grad is not None:
+                raise RuntimeError("Frozen parameter received a gradient: " + name)
+            continue
+        if parameter.grad is None or not bool(torch.isfinite(parameter.grad).all()):
+            raise FloatingPointError("Missing/nonfinite world-model gradient: " + name)
+        if bool(torch.count_nonzero(parameter.grad)):
+            nonzero.append(name)
+    if not nonzero:
+        raise RuntimeError("All world-model gradients are zero")
+    return dict(trainable_parameter_tensors=len(trainable), nonzero_gradient_names=nonzero,
+                zero_gradient_names=sorted(set(trainable) - set(nonzero)),
+                all_frozen_gradients_absent=True, all_trainable_gradients_finite=True)
+
+
 def finalize(model, cfg, stage, backup, identity, store):
     store.backup_check()
     file = stage / "final-model.pt"
@@ -313,11 +347,14 @@ def finalize(model, cfg, stage, backup, identity, store):
 
 def run(a):
     cfg = json.loads(a.config.read_text())
+    if a.world_model_backend == TEMPORAL_LOOP and cfg.get("world_model_backend") != TEMPORAL_LOOP:
+        raise ValueError("The loop configuration must explicitly bind its world_model_backend")
     if "world_model_backend" in cfg and cfg["world_model_backend"] != a.world_model_backend:
         raise ValueError("Configuration and requested world-model backend differ")
     if a.world_model_backend == TEMPORAL_HYBRID:
         cfg.update(experiment="memoir-temporal-hybrid-full", world_model_backend=TEMPORAL_HYBRID)
     layout = architecture(cfg, a.world_model_backend)
+    loop_audit = a.world_model_backend == TEMPORAL_LOOP
     print("PRETRAIN_ARCHITECTURE", json.dumps(layout), flush=True)
     if os.environ.get("PYTHONHASHSEED") != "0" or not torch.cuda.is_available():
         raise RuntimeError("Launch on a CUDA GPU with PYTHONHASHSEED=0")
@@ -344,9 +381,17 @@ def run(a):
         print("PRETRAIN_DATA", json.dumps({"r2r": len(rows.original), "prevalent": len(rows.offsets), "total": len(rows)}), flush=True)
         model = pre.make_model({**cfg, "init_checkpoint": str(root / BASE_FILE)})
         trainable = {n: p for n, p in model.named_parameters() if p.requires_grad}
+        if loop_audit and len(trainable) != 81:
+            raise RuntimeError("Loop pretraining expects exactly 81 world-model parameter tensors")
         initialization = initialization_audit(model, root / BASE_FILE)
         run_contract = contract(cfg, assets, rows, store.mount, initialization)
         frozen_names = model.state_dict().keys() - trainable.keys()
+        frozen_reference = frozen_fingerprints(model, frozen_names) if loop_audit else None
+        if loop_audit:
+            run_contract["loop_training_audit"] = dict(
+                trainable_parameter_tensors=81, frozen_state_tensors=len(frozen_names),
+                frozen_reference_sha256=pre.json_sha(frozen_reference),
+                check_frozen_at_each_checkpoint=True, check_gradients_at_each_update=True)
         digest = mirror_base(stage, backup, frozen_names, model, store, a.require_resume)
         identity = {"contract": run_contract, "frozen_base_sha256": digest, "trainable_names": sorted(trainable)}
         if a.require_resume:
@@ -375,13 +420,32 @@ def run(a):
         else:
             sampler = pre.Sampler(len(rows))
             restored_rng = None
+        state_restored_step = step
 
         def save():
+            if loop_audit:
+                actual = frozen_fingerprints(model, frozen_names)
+                changed = [name for name in frozen_names if actual[name] != frozen_reference[name]]
+                if changed:
+                    raise RuntimeError("Frozen tensors changed: " + ", ".join(sorted(changed)))
             state = {"schema": SCHEMA, "identity_sha256": identity_sha, "step": step, "microbatch": width,
                      "trainable_state": {k: v.detach().cpu() for k, v in trainable.items()},
                      "optimizer": pre.cpu_tree(optimizer.state_dict()), "scheduler": pre.scheduler_state(step, cfg),
                      "sampler": sampler.state(), "rng": pre.rng_state(), "mount_at_save": store.mount}
-            store.save(state, {"kind": "frozen-base-plus-all-trainable-weights"}, step=step)
+            checkpoint_id = store.save(state, {"kind": "frozen-base-plus-all-trainable-weights"}, step=step)
+            if loop_audit:
+                record = dict(step=step, checkpoint_id=checkpoint_id, frozen_unchanged=True,
+                              frozen_state_tensors=len(frozen_reference),
+                              frozen_reference_sha256=pre.json_sha(frozen_reference))
+                for destination in (stage, backup):
+                    store.backup_check()
+                    pre.write_json(destination / "frozen-audit.json", record)
+                print("PRETRAIN_FROZEN_AUDIT", json.dumps(record), flush=True)
+
+        print("PRETRAIN_START", json.dumps(dict(step=step, target=cfg["steps"],
+              stop_after=a.stop_after, require_resume=a.require_resume,
+              backend=a.world_model_backend, architecture=layout,
+              trainable_parameter_tensors=len(trainable), identity_sha256=identity_sha)), flush=True)
 
         if not a.require_resume:
             save()
@@ -411,6 +475,11 @@ def run(a):
                     pre.set_rng(before)
                     print("PRETRAIN_MICROBATCH_RETRY", width, flush=True)
                 grad = torch.nn.utils.clip_grad_norm_(trainable.values(), cfg["grad_clip"], error_if_nonfinite=True)
+                if loop_audit:
+                    gradient_audit = audit_gradients(model, trainable)
+                    if step == 0 or (a.require_resume and step == state_restored_step):
+                        pre.write_json(stage / "gradient-audit.json", dict(step=step + 1, **gradient_audit))
+                        print("PRETRAIN_GRADIENT_AUDIT", json.dumps(dict(step=step + 1, **gradient_audit)), flush=True)
                 lr = pre.scheduled_lr(step + 1, cfg)
                 for group in optimizer.param_groups:
                     group["lr"] = lr
